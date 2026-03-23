@@ -2,7 +2,7 @@ import os
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 
 import httpx
 import psycopg2
@@ -33,6 +33,7 @@ embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 # Default Ollama port is 11434.
 OLLAMA_URL = os.getenv("OLLAMA_URL")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "MedAIBase/MedGemma1.5:4b")
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
 
 # Simple in-memory progress store for uploads
 UPLOAD_PROGRESS = {}
@@ -49,7 +50,7 @@ class SearchResult(BaseModel):
     manufacturer: str
     device_model: str
     content: str
-    page_number: int
+    page_number: Optional[int]
     similarity: float
 
 
@@ -507,7 +508,7 @@ EXPERT ANSWER:"""
                     "stream": False,  # Set to True later if you want a ChatGPT-style typing effect
                 },
                 timeout=httpx.Timeout(
-                    300.0, connect=10.0
+                    OLLAMA_TIMEOUT_SECONDS, connect=10.0
                 ),  # Allow slower local-model inference while failing fast on bad connectivity
             )
             response.raise_for_status()
