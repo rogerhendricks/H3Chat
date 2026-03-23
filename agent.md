@@ -35,6 +35,11 @@ This document briefs an AI agent on how to operate the H3Chat service (FastAPI +
   - Returns `job_id` and `status_url`; ingestion runs in background and leverages the same pipeline as `ingest_pdfs.py`.
 - `GET /api/upload_pdf/{job_id}/status`
   - Poll to see progress: status, percent, message, and chunk counters.
+- `POST /api/upload_md`
+  - Multipart form fields: `file` (markdown), `title`, `manufacturer`, `device_model`, `doc_type`, `year`.
+  - Returns `job_id` and `status_url`; ingestion runs in background and leverages the Markdown ingestion pipeline.
+- `GET /api/upload_md/{job_id}/status`
+  - Poll to see progress: status, percent, message, and chunk counters.
 
 ## Ingestion workflow (run before serving queries)
 1) Ensure PostgreSQL has pgvector and tables `reference_documents` and `document_chunks` with matching embedding dimension (384 for Qwen3 small embedding; adjust schema if model changes).
