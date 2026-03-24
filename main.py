@@ -31,9 +31,9 @@ DB_PASS = os.getenv("DB_PASS")
 embedding_model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 
 # Default Ollama port is 11434.
-OLLAMA_URL = os.getenv("OLLAMA_URL")
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "MedAIBase/MedGemma1.5:4b")
-OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://10.0.0.32:11434/api/generate")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "qwen3.5:9b")
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "600"))
 
 # Simple in-memory progress store for uploads
 UPLOAD_PROGRESS = {}
