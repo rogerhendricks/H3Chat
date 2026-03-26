@@ -14,8 +14,7 @@ from pgvector.psycopg2 import register_vector
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
-from ingest_markdown import process_markdown
-from ingest_pdfs import process_pdf
+from ingest import DOCLING_SUPPORTED_EXTENSIONS, process_document
 
 # Load .env if present (no-op in production where env vars are injected)
 load_dotenv()
@@ -133,10 +132,15 @@ def _run_ingest_job(
     def progress(stage, payload):
         if stage == "start":
             _set_progress(
-                job_id, "running", 5, "Upload received. Starting extraction..."
+                job_id, "running", 5, "Upload received. Starting conversion..."
+            )
+        elif stage == "converting":
+            filename = payload.get("filename", "document")
+            _set_progress(
+                job_id, "running", 10, f"Sending '{filename}' to Docling for conversion..."
             )
         elif stage == "markdown_extracted":
-            _set_progress(job_id, "running", 25, "Markdown extracted from PDF.")
+            _set_progress(job_id, "running", 25, "Document converted to Markdown.")
         elif stage == "chunked":
             total = payload.get("total_chunks", 0)
             _set_progress(
@@ -166,7 +170,7 @@ def _run_ingest_job(
 
     try:
         _set_progress(job_id, "running", 1, "Preparing ingestion job...")
-        process_pdf(
+        process_document(
             file_path=temp_path,
             title=title,
             manufacturer=manufacturer,
@@ -186,73 +190,8 @@ def _run_ingest_job(
             pass
 
 
-def _run_ingest_markdown_job(
-    job_id: str,
-    temp_path: str,
-    title: str,
-    manufacturer: str,
-    device_model: str,
-    doc_type: str,
-    year: int,
-):
-    def progress(stage, payload):
-        if stage == "start":
-            _set_progress(
-                job_id, "running", 5, "Upload received. Starting ingestion..."
-            )
-        elif stage == "markdown_loaded":
-            _set_progress(job_id, "running", 20, "Markdown loaded successfully.")
-        elif stage == "chunked":
-            total = payload.get("total_chunks", 0)
-            _set_progress(
-                job_id,
-                "running",
-                40,
-                f"Chunked document into {total} parts.",
-                {"total_chunks": total},
-            )
-        elif stage == "chunk_progress":
-            current = payload.get("current", 0)
-            total = payload.get("total", 1)
-            percent = 40 + (50 * (current / total))
-            _set_progress(
-                job_id,
-                "running",
-                min(percent, 95),
-                f"Embedding chunks ({current}/{total})...",
-                {"current": current, "total": total},
-            )
-        elif stage == "completed":
-            _set_progress(job_id, "completed", 100, "Ingestion complete.", payload)
-        elif stage == "error":
-            _set_progress(
-                job_id, "error", 100, f"Ingestion failed: {payload.get('message', '')}"
-            )
-
-    try:
-        _set_progress(job_id, "running", 1, "Preparing ingestion job...")
-        process_markdown(
-            file_path=temp_path,
-            title=title,
-            manufacturer=manufacturer,
-            device_model=device_model,
-            doc_type=doc_type,
-            year=year,
-            progress_callback=progress,
-        )
-        if UPLOAD_PROGRESS.get(job_id, {}).get("status") not in {"completed", "error"}:
-            _set_progress(job_id, "completed", 100, "Ingestion complete.")
-    except Exception as e:
-        _set_progress(job_id, "error", 100, f"Unhandled error: {e}")
-    finally:
-        try:
-            os.remove(temp_path)
-        except FileNotFoundError:
-            pass
-
-
-@app.post("/api/upload_pdf")
-async def upload_pdf(
+@app.post("/api/upload")
+async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str = Form(...),
@@ -261,14 +200,21 @@ async def upload_pdf(
     doc_type: str = Form(...),
     year: int = Form(...),
 ):
-    if file.content_type not in {"application/pdf", "application/octet-stream"}:
-        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF.")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in DOCLING_SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type '{ext}'. "
+                f"Supported: {', '.join(sorted(DOCLING_SUPPORTED_EXTENSIONS))}"
+            ),
+        )
 
     job_id = str(uuid.uuid4())
     _set_progress(job_id, "queued", 0, "File queued for ingestion.")
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(await file.read())
             temp_path = tmp.name
     except Exception as e:
@@ -288,66 +234,12 @@ async def upload_pdf(
 
     return {
         "job_id": job_id,
-        "status_url": f"/api/upload_pdf/{job_id}/status",
+        "status_url": f"/api/upload/{job_id}/status",
         "message": "Upload accepted. Poll status_url for progress.",
     }
 
 
-@app.post("/api/upload_md")
-async def upload_markdown(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    title: str = Form(...),
-    manufacturer: str = Form(...),
-    device_model: str = Form(...),
-    doc_type: str = Form(...),
-    year: int = Form(...),
-):
-    if file.content_type not in {
-        "text/markdown",
-        "text/plain",
-        "application/octet-stream",
-    }:
-        raise HTTPException(status_code=400, detail="Uploaded file must be Markdown.")
-
-    job_id = str(uuid.uuid4())
-    _set_progress(job_id, "queued", 0, "File queued for ingestion.")
-
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".md") as tmp:
-            tmp.write(await file.read())
-            temp_path = tmp.name
-    except Exception as e:
-        _set_progress(job_id, "error", 100, f"Failed to store upload: {e}")
-        raise HTTPException(status_code=500, detail="Failed to store uploaded file.")
-
-    background_tasks.add_task(
-        _run_ingest_markdown_job,
-        job_id,
-        temp_path,
-        title,
-        manufacturer,
-        device_model,
-        doc_type,
-        year,
-    )
-
-    return {
-        "job_id": job_id,
-        "status_url": f"/api/upload_md/{job_id}/status",
-        "message": "Upload accepted. Poll status_url for progress.",
-    }
-
-
-@app.get("/api/upload_md/{job_id}/status")
-async def upload_markdown_status(job_id: str):
-    progress = UPLOAD_PROGRESS.get(job_id)
-    if not progress:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return progress
-
-
-@app.get("/api/upload_pdf/{job_id}/status")
+@app.get("/api/upload/{job_id}/status")
 async def upload_status(job_id: str):
     progress = UPLOAD_PROGRESS.get(job_id)
     if not progress:
