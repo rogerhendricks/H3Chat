@@ -13,6 +13,7 @@ import requests
 from dotenv import load_dotenv
 from langchain_text_splitters import MarkdownTextSplitter
 from pgvector.psycopg2 import register_vector
+from psycopg2.extras import execute_values
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
@@ -38,6 +39,7 @@ if DOCLING_URL.startswith("https://"):
 
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_NAME)
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
 # File extensions accepted by Docling's /v1alpha/convert/file endpoint
 DOCLING_SUPPORTED_EXTENSIONS = {
@@ -164,24 +166,39 @@ def process_document(
 
         # Phase 3: Embed and insert chunks
         print("Phase 3: Generating embeddings and saving to PostgreSQL...")
-        for i, chunk in enumerate(tqdm(chunks, desc="Embedding Chunks", unit="chunk")):
-            content = chunk.page_content
-            embedding = EMBEDDING_MODEL.encode(content).tolist()
-            is_table = "|" in content and "---" in content
+        total_chunks = len(chunks)
+        for batch_start in tqdm(
+            range(0, total_chunks, EMBEDDING_BATCH_SIZE),
+            desc="Embedding Chunks",
+            unit="batch",
+        ):
+            batch_end = min(batch_start + EMBEDDING_BATCH_SIZE, total_chunks)
+            batch_chunks = chunks[batch_start:batch_end]
+            batch_texts = [chunk.page_content for chunk in batch_chunks]
 
-            cur.execute(
+            embeddings = EMBEDDING_MODEL.encode(
+                batch_texts, batch_size=EMBEDDING_BATCH_SIZE
+            ).tolist()
+
+            rows = []
+            for content, embedding in zip(batch_texts, embeddings):
+                is_table = "|" in content and "---" in content
+                rows.append((document_id, content, is_table, embedding))
+
+            execute_values(
+                cur,
                 """
                 INSERT INTO document_chunks
                 (document_id, content, is_table, embedding)
-                VALUES (%s, %s, %s, %s);
+                VALUES %s;
                 """,
-                (document_id, content, is_table, embedding),
+                rows,
             )
 
-            if progress_callback and (i % 25 == 0 or i == len(chunks) - 1):
+            if progress_callback:
                 progress_callback(
                     "chunk_progress",
-                    {"current": i + 1, "total": len(chunks)},
+                    {"current": batch_end, "total": total_chunks},
                 )
 
         conn.commit()

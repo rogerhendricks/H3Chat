@@ -7,13 +7,23 @@ from typing import List, Optional
 import httpx
 import psycopg2
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
 from pgvector.psycopg2 import register_vector
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
+from auth import get_current_user, setup_auth
+from auth import router as auth_router
 from ingest import DOCLING_SUPPORTED_EXTENSIONS, process_document
 
 # Load .env if present (no-op in production where env vars are injected)
@@ -62,6 +72,7 @@ class GenerationResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global embedding_model
+    setup_auth()
     print("Loading Qwen3 embedding model into memory...")
     # Update this to match the exact Qwen3 model you chose during ingestion
     # If `embedding_model` is a string name, load the model into memory
@@ -82,6 +93,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(auth_router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -137,7 +149,10 @@ def _run_ingest_job(
         elif stage == "converting":
             filename = payload.get("filename", "document")
             _set_progress(
-                job_id, "running", 10, f"Sending '{filename}' to Docling for conversion..."
+                job_id,
+                "running",
+                10,
+                f"Sending '{filename}' to Docling for conversion...",
             )
         elif stage == "markdown_extracted":
             _set_progress(job_id, "running", 25, "Document converted to Markdown.")
@@ -199,6 +214,7 @@ async def upload_document(
     device_model: str = Form(...),
     doc_type: str = Form(...),
     year: int = Form(...),
+    current_user=Depends(get_current_user),
 ):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in DOCLING_SUPPORTED_EXTENSIONS:
@@ -240,7 +256,7 @@ async def upload_document(
 
 
 @app.get("/api/upload/{job_id}/status")
-async def upload_status(job_id: str):
+async def upload_status(job_id: str, current_user=Depends(get_current_user)):
     progress = UPLOAD_PROGRESS.get(job_id)
     if not progress:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -249,7 +265,9 @@ async def upload_status(job_id: str):
 
 # 5. The Retrieval Endpoint
 @app.post("/api/search", response_model=List[SearchResult])
-async def search_documents(request: SearchRequest):
+async def search_documents(
+    request: SearchRequest, current_user=Depends(get_current_user)
+):
     if not embedding_model:
         raise HTTPException(status_code=503, detail="Embedding model not loaded yet.")
 
@@ -301,7 +319,7 @@ async def search_documents(request: SearchRequest):
 
 
 @app.post("/api/ask", response_model=GenerationResponse)
-async def ask_documents(request: SearchRequest):
+async def ask_documents(request: SearchRequest, current_user=Depends(get_current_user)):
     if not embedding_model:
         raise HTTPException(status_code=503, detail="Embedding model not loaded yet.")
 
