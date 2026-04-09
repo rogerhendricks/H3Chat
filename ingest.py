@@ -90,6 +90,7 @@ def _convert_to_markdown(file_path: str) -> str:
             response = requests.post(
                 f"{DOCLING_URL}/v1/convert/file",
                 files={"files": (os.path.basename(file_path), f, mime_type)},
+                data={"image_export_mode_value": "placeholder"},
                 timeout=300,
             )
         response.raise_for_status()
